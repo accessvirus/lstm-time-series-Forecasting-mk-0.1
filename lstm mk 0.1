@@ -1,0 +1,90 @@
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
+
+# Load your data from the file
+file_path = '/content/ABbid_prices.txt'
+
+# Read the data into a pandas DataFrame
+data = pd.read_csv(file_path, header=None)
+
+# Assuming the data contains only one column of time series values
+time_series_data = data.iloc[:, 0].values.reshape(-1, 1)
+
+# Normalize the data using Min-Max scaling
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(time_series_data)
+
+# Define window size and split data into input sequences
+window_size = 32
+
+# Convert data to PyTorch tensors
+scaled_data_tensor = torch.Tensor(scaled_data)
+
+# Define LSTM model
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size=1, hidden_size=50, batch_first=True)
+        self.fc = nn.Linear(50, 10)  # Adjust output size to match the target shape
+    
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        output = self.fc(lstm_out[:, -1, :])
+        return output
+
+model = LSTMModel()
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Train the model with real-time plotting
+for i in range(len(scaled_data) - window_size):  # Loop through each window
+    input_sequences = scaled_data_tensor[i:i+window_size]
+    target_values = scaled_data_tensor[i+window_size:i+window_size+10]
+    
+    # Reshape input sequences for LSTM input (samples, time steps, features)
+    input_sequences = input_sequences.view(1, window_size, 1)
+    target_values = target_values.view(1, 10)  # Reshape target values to match model output
+    
+    # Train the model for one epoch
+    optimizer.zero_grad()
+    outputs = model(input_sequences)
+    loss = criterion(outputs, target_values)
+    loss.backward()
+    optimizer.step()
+    
+    # Print loss for each epoch
+    print(f"Epoch [{i+1}/{len(scaled_data) - window_size}] - Loss: {loss.item()}")
+    
+    # Generate forecasted values for plotting
+    forecasted_values = []
+    current_sequence = input_sequences  # Initial sequence for prediction
+
+    for j in range(10):  # Predicting 10 future steps
+        forecast = model(current_sequence)
+        forecasted_values.append(forecast[0, j].item())
+        
+        # Update current sequence by appending the forecasted value
+        current_sequence = torch.cat([current_sequence[:, 1:, :], forecast[:, j].unsqueeze(1).unsqueeze(2)], dim=1)
+    
+    # Reshape the forecasted values to 2D array before inverse transforming
+    forecasted_values = np.array(forecasted_values).reshape(-1, 1)
+    
+    # Inverse transform the forecasted values to get original scale
+    forecasted_values = scaler.inverse_transform(forecasted_values)  # Inverse transform
+    
+    # Clear the previous output
+    clear_output(wait=True)
+    
+    # Plot input sequences, target values, and forecasted values for each window
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(window_size), scaler.inverse_transform(input_sequences.view(window_size, 1).detach().numpy()), label='Input Sequences', marker='o')
+    plt.plot(range(window_size, window_size + 10), scaler.inverse_transform(target_values.view(10, 1).detach().numpy()), label='Target Values')
+    plt.plot(range(window_size, window_size + 10), forecasted_values, label='Forecasted Values', linestyle='--')
+    plt.legend()
+    plt.title(f'Window {i+1}')
+    plt.show()
